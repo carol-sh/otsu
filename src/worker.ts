@@ -17,7 +17,7 @@ import type { Executor } from "./llm/executor.ts";
 import { parseCleanupOutput, parseTurnOutput, type TurnOutput } from "./llm/output.ts";
 import { CLEANUP_TOOLS, TURN_TOOLS, memoryToolRunner } from "./llm/tools.ts";
 import type { Sender } from "./sender.ts";
-import type { EndReason, IgnoredReason, Mode, Slot, Store } from "./store.ts";
+import type { EndReason, IgnoredReason, Message, Mode, Slot, Store } from "./store.ts";
 import { blackoutEnd, clampNextAt, inBlackout, type Clock } from "./time.ts";
 
 export interface WorkerDeps {
@@ -37,6 +37,11 @@ export interface WorkerDeps {
 export interface Worker {
   /** Records a user message on arrival and, when it is valid, buffers it and restarts the debounce timer. */
   receive(text: string): void;
+  /**
+   * Puts messages left unanswered before a restart back in the buffer. They are answered at once,
+   * or when blackout ends if it is on now.
+   */
+  restoreBuffer(messages: readonly Message[]): void;
   /** Queues an event. Events are handled one at a time, in arrival order. */
   enqueue(event: HarnessEvent): void;
   /** Resolves once the queue is empty and no event is being handled. */
@@ -387,6 +392,18 @@ export function createWorker(deps: WorkerDeps): Worker {
         ...(reason ? { ignoredReason: reason } : {}),
       });
       if (!reason) buffer.add(message, debounceDelayMs(now, config));
+    },
+
+    restoreBuffer(messages) {
+      if (messages.length === 0) return;
+      const config = deps.config();
+      const now = clock.now();
+      const blackout = inBlackout(now, config);
+      const delayMs = blackout
+        ? blackoutEnd(now, config).diff(now).toMillis()
+        : debounceDelayMs(now, config);
+      for (const message of messages) buffer.add(message, delayMs);
+      if (!blackout) enqueue({ kind: "debounce" });
     },
 
     enqueue,

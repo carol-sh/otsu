@@ -10,6 +10,7 @@ import { createRuntimeConfigSource } from "../../src/config.ts";
 import { createExecutor } from "../../src/llm/executor.ts";
 import { installInitialMemory } from "../../src/memory.ts";
 import { createScheduler, type Scheduler } from "../../src/scheduler.ts";
+import { recover } from "../../src/recovery.ts";
 import { openStore, type Store } from "../../src/store.ts";
 import { systemClock } from "../../src/time.ts";
 import { createWorker, type Worker } from "../../src/worker.ts";
@@ -67,7 +68,8 @@ export interface StartOptions {
 
 /**
  * A worker wired to a real store, scheduler, and `.env` in a temporary data dir, with mocked time,
- * a scripted chat client, and a sender that keeps what it sent.
+ * a scripted chat client, and a sender that keeps what it sent. `start` runs restart recovery,
+ * so a test can prepare the database first to start from any saved state.
  */
 export interface WorkerHarness {
   readonly dataDir: string;
@@ -127,7 +129,7 @@ export function openWorkerHarness(): WorkerHarness {
         onFire: (slotId) => worker.enqueue({ kind: "schedule", slotId }),
         random: options.random ?? (() => 1),
       });
-      scheduler.refresh();
+      recover({ store, worker, scheduler });
       return worker;
     },
 
