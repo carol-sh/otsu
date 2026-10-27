@@ -25,6 +25,14 @@ export interface CleanupContextInput {
   now: DateTime;
 }
 
+export interface CompactContextInput {
+  dataDir: string;
+  config: RuntimeConfig;
+  flow: Flow;
+  /** The older messages to fold into the summary, oldest first. */
+  history: readonly Message[];
+}
+
 const TEMPLATE_DIR = new URL("../templates/", import.meta.url);
 
 /**
@@ -60,6 +68,31 @@ export function buildCleanupMessages(input: CleanupContextInput): ChatCompletion
     ]),
     ...conversation(input.flow, input.history, config.timezone, instruction),
   ];
+}
+
+/** Assembles the call that folds a flow's older messages, and its earlier summary, into one summary. */
+export function buildCompactMessages(input: CompactContextInput): ChatCompletionMessageParam[] {
+  const { dataDir, config } = input;
+  return [
+    ...systemMessages([readDataFile(dataDir, "prompt.md"), renderTemplate("compact-rules.md", {})]),
+    ...conversation(
+      input.flow,
+      input.history,
+      config.timezone,
+      "[압축 호출]\n위 대화를 압축 규칙대로 요약한다.",
+    ),
+  ];
+}
+
+/**
+ * Estimates a text's token count without a tokenizer: about one token per Hangul or other
+ * non-ASCII character and one per four ASCII characters.
+ */
+export function estimateTokens(text: string): number {
+  const chars = [...text];
+  const nonAscii = chars.filter((char) => char.codePointAt(0)! > 0x7f).length;
+  const ascii = chars.length - nonAscii;
+  return nonAscii + Math.ceil(ascii / 4);
 }
 
 /** Writes the event block: current time, what happened, the slot memo, and pending random events. */

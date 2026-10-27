@@ -1,8 +1,11 @@
 import { join } from "node:path";
 import type { DateTime } from "luxon";
+import type { BalanceReader } from "./balance.ts";
+import { compactIfLarge } from "./compaction.ts";
 import type { RuntimeConfig } from "./config.ts";
 import { createDebounceBuffer, debounceDelayMs } from "./debounce.ts";
 import type { HarnessEvent } from "./events.ts";
+import { createCallGate } from "./hold.ts";
 import { openMemoryTx, type MemoryLimits } from "./memory.ts";
 import {
   buildCleanupMessages,
@@ -13,13 +16,9 @@ import {
 import type { Executor } from "./llm/executor.ts";
 import { parseCleanupOutput, parseTurnOutput, type TurnOutput } from "./llm/output.ts";
 import { CLEANUP_TOOLS, TURN_TOOLS, memoryToolRunner } from "./llm/tools.ts";
+import type { Sender } from "./sender.ts";
 import type { EndReason, IgnoredReason, Mode, Slot, Store } from "./store.ts";
 import { blackoutEnd, clampNextAt, inBlackout, type Clock } from "./time.ts";
-
-/** Delivers one message to the user. */
-export interface Sender {
-  send(text: string): Promise<void>;
-}
 
 export interface WorkerDeps {
   dataDir: string;
@@ -29,6 +28,8 @@ export interface WorkerDeps {
   config: () => RuntimeConfig;
   executor: Executor;
   sender: Sender;
+  /** Reads the LLM account balance; absent for providers without a balance API. */
+  balance?: BalanceReader;
   /** Called after the slot or the mode changes, so the scheduler re-arms its timers. */
   onScheduleChange: () => void;
 }
@@ -60,11 +61,22 @@ const NOTICE = {
   notPaused: "[하네스] 정지 상태가 아니라서 무시했다.",
 } as const;
 
+/** Marks the memo of a backoff slot. Repeated failures keep a single mark. */
+const FAILED_MARK = "[이전 호출 실패] ";
+
 export function createWorker(deps: WorkerDeps): Worker {
   const { store, clock } = deps;
   const memoryDir = join(deps.dataDir, "memory");
   const queue: HarnessEvent[] = [];
   const buffer = createDebounceBuffer(() => enqueue({ kind: "debounce" }));
+  const gate = createCallGate({
+    store,
+    clock,
+    config: deps.config,
+    balance: deps.balance,
+    sender: deps.sender,
+    release: (events) => events.forEach(enqueue),
+  });
   let draining: Promise<void> | undefined;
 
   function enqueue(event: HarnessEvent): void {
@@ -104,16 +116,21 @@ export function createWorker(deps: WorkerDeps): Worker {
   function handle(event: HarnessEvent): Promise<void> {
     switch (event.kind) {
       case "debounce":
-        return onDebounce();
+        return whenAdmitted(event, onDebounce);
       case "schedule":
-        return onSchedule(event.slotId);
+        return whenAdmitted(event, () => onSchedule(event.slotId));
       case "cleanup":
-        return runCleanup(event.flowId);
+        return whenAdmitted(event, () => runCleanup(event.flowId));
       case "pause":
         return pause();
       case "resume":
         return resume();
     }
+  }
+
+  /** Runs an event that may call the LLM, unless the call gate holds it for later. */
+  async function whenAdmitted(event: HarnessEvent, run: () => Promise<void>): Promise<void> {
+    if (await gate.admit(event)) await run();
   }
 
   /** Calls with the buffered messages, or holds them until blackout ends when it has started meanwhile. */
@@ -180,7 +197,7 @@ export function createWorker(deps: WorkerDeps): Worker {
       parse: parseTurnOutput,
     });
     if (!result.ok) {
-      recordFailure(result.error);
+      await recordFailure(result.error);
       return;
     }
     await applyTurn({
@@ -194,7 +211,7 @@ export function createWorker(deps: WorkerDeps): Worker {
     });
   }
 
-  /** Applies a turn in the designed order: record, send, close the flow if asked, replace the slot. */
+  /** Applies a turn in the designed order: record, send, close the flow if asked, replace the slot, compact. */
   async function applyTurn(turn: TurnResult): Promise<void> {
     const flowId = recordTurn(turn);
     for (const text of turn.output.messages) {
@@ -206,6 +223,9 @@ export function createWorker(deps: WorkerDeps): Worker {
       store.updateState({ mode: "ended", currentFlowId: null });
     }
     scheduleNext(turn.output.next);
+    if (turn.output.flow === "continue" && !(await gate.blocked())) {
+      await compactIfLarge(deps, flowId);
+    }
   }
 
   /** Opens the flow when the turn started one, stores the event and the answer, and settles the counters. */
@@ -250,10 +270,41 @@ export function createWorker(deps: WorkerDeps): Worker {
     deps.onScheduleChange();
   }
 
-  function recordFailure(error: string): void {
+  /**
+   * Discards a failed turn: the flow stays as it was, and a backoff slot carries the previous slot's
+   * type and memo. The operator hears about it once, when the streak reaches `alert_after`.
+   */
+  async function recordFailure(error: string): Promise<void> {
+    const config = deps.config();
     const failures = store.state().consecutiveFailures + 1;
     store.updateState({ consecutiveFailures: failures });
     console.error(`turn call failed (${failures} in a row): ${error}`);
+    scheduleBackoff(failures, config);
+    if (failures === config.alertAfter) {
+      await deps.sender.send(
+        `[하네스] LLM 호출이 ${failures}회 연속 실패했다. 마지막 오류: ${error.slice(0, 300)}`,
+      );
+    }
+  }
+
+  /** Replaces the slot with one `fallback_delay × 2^(k−1)` minutes away, capped at `fallback_max_delay`. */
+  function scheduleBackoff(failures: number, config: RuntimeConfig): void {
+    const now = clock.now();
+    const delayMin = Math.min(
+      config.fallbackDelayMin * 2 ** (failures - 1),
+      config.fallbackMaxDelayMin,
+    );
+    const previous = store.slot();
+    const memo = previous?.memo ?? "";
+    store.replaceSlot(
+      {
+        at: blackoutEnd(now.plus({ minutes: delayMin }), config),
+        type: previous?.type ?? "followup",
+        memo: memo.startsWith(FAILED_MARK) ? memo : FAILED_MARK + memo,
+      },
+      now,
+    );
+    deps.onScheduleChange();
   }
 
   /** Writes the ended flow into long-term memory, retrying up to `cleanup_retry` times. */

@@ -3,6 +3,7 @@ import { z } from "zod";
 
 export type TurnOutput = z.output<typeof turnOutputSchema>;
 export type CleanupOutput = z.output<typeof cleanupOutputSchema>;
+export type CompactOutput = z.output<typeof compactOutputSchema>;
 
 /** Parses the model's final text into a value, or explains why it cannot. */
 export type OutputParser<T> = (
@@ -34,11 +35,14 @@ const turnOutputSchema = z.object({
 });
 
 const cleanupOutputSchema = z.object({ done: z.literal(true) });
+const compactOutputSchema = z.object({ summary: z.string().min(1) });
 
 export const parseTurnOutput: OutputParser<TurnOutput> = (text) =>
   parseJson(turnOutputSchema, text);
 export const parseCleanupOutput: OutputParser<CleanupOutput> = (text) =>
   parseJson(cleanupOutputSchema, text);
+export const parseCompactOutput: OutputParser<CompactOutput> = (text) =>
+  parseJson(compactOutputSchema, text);
 
 function parseJson<T extends z.ZodType>(
   schema: T,
