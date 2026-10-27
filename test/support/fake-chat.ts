@@ -4,7 +4,8 @@ import type {
 } from "openai/resources/chat/completions";
 import type { ChatClient } from "../../src/llm/client.ts";
 
-export type ScriptedReply = ChatCompletion | Error;
+/** A reply, an error to throw, or a promise that holds the reply back until the test settles it. */
+export type ScriptedReply = ChatCompletion | Error | Promise<ChatCompletion>;
 
 /** A chat client that answers from a script and keeps every request it got. */
 export interface FakeChat extends ChatClient {
