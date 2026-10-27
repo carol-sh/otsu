@@ -8,7 +8,8 @@ const MEMORY_READ: ChatCompletionFunctionTool = {
   type: "function",
   function: {
     name: "memory_read",
-    description: "기억 파일 하나를 이름으로 읽는다. INDEX에 있는 이름만 읽을 수 있다.",
+    description:
+      "Read a memory file from the memory directory. Use it when the file will sharpen the current response — vulnerabilities to press, tactics that have worked, the current state of the relationship. The INDEX is usually enough to decide whether to open a file.",
     parameters: {
       type: "object",
       properties: { name: { type: "string" } },
@@ -22,7 +23,8 @@ const MEMORY_WRITE: ChatCompletionFunctionTool = {
   type: "function",
   function: {
     name: "memory_write",
-    description: "기존 기억 파일 전체를 덮어쓴다. frontmatter를 포함한 파일 전체를 넣는다.",
+    description:
+      "Replace a memory file's entire content. This overwrites the whole file, so read it first with memory_read. Writes are collected during the call and committed only if the call succeeds. If the content exceeds the size limit, the write is rejected; compress and retry.",
     parameters: {
       type: "object",
       properties: { name: { type: "string" }, content: { type: "string" } },
@@ -36,7 +38,8 @@ const MEMORY_CREATE: ChatCompletionFunctionTool = {
   type: "function",
   function: {
     name: "memory_create",
-    description: "새 기억 파일을 만든다. 기존 분류 어디에도 맞지 않을 때만 쓴다.",
+    description:
+      "Create a new memory file. Use only when the content fits none of the five existing files. Rejected if the file count limit is reached. The description becomes the file's line in the INDEX, so keep it short and specific.",
     parameters: {
       type: "object",
       properties: {
@@ -78,5 +81,5 @@ export function memoryToolRunner(tx: MemoryTx, allowWrites: boolean): ToolRunner
 }
 
 function notAllowed(name: string): string {
-  return `${name}은 정리 호출에서만 쓸 수 있다.`;
+  return `${name}은 정리 호출에서만 쓸 수 있다. 이번 호출에서는 아무것도 쓰이지 않았다.`;
 }

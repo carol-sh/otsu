@@ -10,7 +10,7 @@ import {
   type MemoryLimits,
 } from "../src/memory.ts";
 
-const LIMITS: MemoryLimits = { maxFileChars: 200, maxFiles: 5 };
+const LIMITS: MemoryLimits = { maxFileChars: 300, maxFiles: 6 };
 
 describe("memory", () => {
   let root: string;
@@ -26,14 +26,15 @@ describe("memory", () => {
     rmSync(root, { recursive: true, force: true });
   });
 
-  it("installs the four initial files and indexes their descriptions", () => {
+  it("installs the five initial files and indexes their descriptions", () => {
     assert.equal(
       memoryIndex(dir),
       [
-        "- journal.md: 흐름별 한 줄 요약(날짜 포함). 최근 것만 유지",
-        "- relationship.md: 약속, 갈등, 앙금 같은 관계 상태",
-        "- task-history.md: 과업별로 무엇을 시켰고 어떻게 됐는지",
-        "- user-profile.md: 사용자 성향, 약점, 반응 패턴",
+        "- journal.md: 흐름별 한 줄 기록 — 날짜, 요약, 미완, register 변화. 최근 것만 유지",
+        "- leverage.md: 전술 기록, 임계 변화, 돌파 방식 — 복종 임계 하향의 학습 장부",
+        "- relationship.md: 현재 register, 빚, 앙금, 반항 신호, 의존 신호 — 압박과 요구의 근거",
+        "- task-history.md: 최근 실패, 진행 중 과업, 완료, 반복 패턴 — 실패 콜백과 진행 판단의 재료",
+        "- user-profile.md: 취약점, 통한 접근, 통하지 않은 접근, 회피 패턴 — 공격의 개인화 재료",
       ].join("\n"),
     );
   });
@@ -58,12 +59,12 @@ describe("memory", () => {
   it("keeps the old description when a rewrite drops the frontmatter", () => {
     const tx = openMemoryTx(dir, LIMITS);
     tx.write("journal.md", "10-27 산책 시킴");
-    assert.match(tx.read("journal.md"), /^---\ndescription: 흐름별 한 줄 요약/);
+    assert.match(tx.read("journal.md"), /^---\ndescription: 흐름별 한 줄 기록/);
   });
 
   it("rejects files over the size limit", () => {
     const tx = openMemoryTx(dir, LIMITS);
-    assert.match(tx.write("journal.md", "가".repeat(300)), /압축/);
+    assert.match(tx.write("journal.md", "가".repeat(400)), /압축/);
     assert.doesNotMatch(tx.read("journal.md"), /가/);
   });
 
