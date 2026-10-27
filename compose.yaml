@@ -1,0 +1,11 @@
+services:
+  otsu:
+    build: .
+    image: otsu
+    restart: unless-stopped
+    environment:
+      DATA_DIR: /data
+    volumes:
+      - ./data:/data
+    # A turn call with tool rounds can take a while; let the event in progress finish on stop.
+    stop_grace_period: 60s

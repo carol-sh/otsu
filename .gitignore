@@ -3,3 +3,4 @@ node_modules
 *.local
 data/*
 !data/.env.example
+!data/.env.e2e.example
