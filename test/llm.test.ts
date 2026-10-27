@@ -197,4 +197,20 @@ describe("turn context", () => {
       ].join("\n\n"),
     );
   });
+
+  it("appends reminder.md after the event block", () => {
+    writeFileSync(join(dataDir, "reminder.md"), "[응답 전 확인]\n- 우비로 답한다.\n");
+    const messages = buildTurnMessages({
+      dataDir,
+      config: CONFIG,
+      flow: undefined,
+      history: [],
+      eventBlock: "[이벤트]\n종류: 사용자 답장",
+    });
+
+    assert.equal(
+      messages.at(-1)?.content,
+      "[이벤트]\n종류: 사용자 답장\n\n[응답 전 확인]\n- 우비로 답한다.",
+    );
+  });
 });

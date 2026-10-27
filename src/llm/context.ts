@@ -38,7 +38,8 @@ const TEMPLATE_DIR = new URL("../templates/", import.meta.url);
 /**
  * Assembles a turn call, most stable part first so the provider can cache the prefix:
  * prompt, task pool, harness rules, memory INDEX, flow conversation, then the event block
- * merged into the last user message.
+ * merged into the last user message, followed by `reminder.md` when it exists.
+ * The reminder is never stored, so only the latest call carries it.
  */
 export function buildTurnMessages(input: TurnContextInput): ChatCompletionMessageParam[] {
   const { dataDir, config } = input;
@@ -49,7 +50,12 @@ export function buildTurnMessages(input: TurnContextInput): ChatCompletionMessag
       renderTemplate("turn-rules.md", turnRuleValues(config)),
       indexBlock(dataDir),
     ]),
-    ...conversation(input.flow, input.history, config.timezone, input.eventBlock),
+    ...conversation(
+      input.flow,
+      input.history,
+      config.timezone,
+      joinBlocks([input.eventBlock, readDataFile(dataDir, "reminder.md")]),
+    ),
   ];
 }
 
@@ -111,6 +117,14 @@ export function renderEventBlock(
   }
   lines.push(`랜덤 이벤트 대기: ${randomDue}건`);
   return lines.join("\n");
+}
+
+/** Joins the non-empty blocks with a blank line between them. */
+function joinBlocks(blocks: string[]): string {
+  return blocks
+    .map((block) => block.trim())
+    .filter((block) => block !== "")
+    .join("\n\n");
 }
 
 function systemMessages(blocks: string[]): ChatCompletionMessageParam[] {
