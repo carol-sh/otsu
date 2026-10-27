@@ -1,7 +1,7 @@
 import { join } from "node:path";
 import type { DateTime } from "luxon";
 import type { RuntimeConfig } from "./config.ts";
-import { createDebounceBuffer } from "./debounce.ts";
+import { createDebounceBuffer, debounceDelayMs } from "./debounce.ts";
 import type { HarnessEvent } from "./events.ts";
 import { openMemoryTx, type MemoryLimits } from "./memory.ts";
 import {
@@ -13,7 +13,7 @@ import {
 import type { Executor } from "./llm/executor.ts";
 import { parseCleanupOutput, parseTurnOutput, type TurnOutput } from "./llm/output.ts";
 import { CLEANUP_TOOLS, TURN_TOOLS, memoryToolRunner } from "./llm/tools.ts";
-import type { EndReason, IgnoredReason, Mode, Store } from "./store.ts";
+import type { EndReason, IgnoredReason, Mode, Slot, Store } from "./store.ts";
 import { blackoutEnd, clampNextAt, inBlackout, type Clock } from "./time.ts";
 
 /** Delivers one message to the user. */
@@ -116,19 +116,42 @@ export function createWorker(deps: WorkerDeps): Worker {
     }
   }
 
+  /** Calls with the buffered messages, or holds them until blackout ends when it has started meanwhile. */
   async function onDebounce(): Promise<void> {
     const state = store.state();
     if (buffer.isEmpty() || state.mode !== "active" || state.currentFlowId === null) return;
+    const config = deps.config();
+    const now = clock.now();
+    if (inBlackout(now, config)) {
+      buffer.arm(blackoutEnd(now, config).diff(now).toMillis());
+      return;
+    }
     await runTurn({ kind: "reply" }, state.currentFlowId);
   }
 
-  /** Drops the event when the slot was replaced after it fired. An ended state starts a new flow. */
+  /**
+   * Drops the event when the slot was replaced after it fired, and pushes the slot past a blackout
+   * that started meanwhile. Buffered replies take the place of the slot; an ended state starts a new flow.
+   */
   async function onSchedule(slotId: number): Promise<void> {
     const slot = store.slot();
     const state = store.state();
     if (!slot || slot.id !== slotId || state.mode === "paused") return;
-    const trigger: TurnEvent = { kind: "schedule", type: slot.type, memo: slot.memo };
-    await runTurn(trigger, state.mode === "active" ? state.currentFlowId : null);
+    const config = deps.config();
+    const now = clock.now();
+    if (inBlackout(now, config)) {
+      pushSlotPastBlackout(slot, now, config);
+    } else if (!buffer.isEmpty() && state.currentFlowId !== null) {
+      await runTurn({ kind: "reply" }, state.currentFlowId);
+    } else {
+      const trigger: TurnEvent = { kind: "schedule", type: slot.type, memo: slot.memo };
+      await runTurn(trigger, state.mode === "active" ? state.currentFlowId : null);
+    }
+  }
+
+  function pushSlotPastBlackout(slot: Slot, now: DateTime, config: RuntimeConfig): void {
+    store.replaceSlot({ at: blackoutEnd(now, config), type: slot.type, memo: slot.memo }, now);
+    deps.onScheduleChange();
   }
 
   /** Takes the buffered messages as this call's input, calls the LLM, and applies the result. */
@@ -312,7 +335,7 @@ export function createWorker(deps: WorkerDeps): Worker {
         ts: store.issueMessageTs(now),
         ...(reason ? { ignoredReason: reason } : {}),
       });
-      if (!reason) buffer.add(message, config.debounceSec * 1000);
+      if (!reason) buffer.add(message, debounceDelayMs(now, config));
     },
 
     enqueue,

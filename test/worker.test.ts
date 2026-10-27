@@ -233,4 +233,83 @@ describe("worker", () => {
     assert.equal(chat.requests.length, 2);
     assert.equal(sent.at(-1), "[하네스] 정지했다. /resume을 보내면 다시 시작한다.");
   });
+
+  it("answers buffered replies instead of a slot that comes due during the debounce", async () => {
+    const worker = start([
+      turnReply("continue", "2026-10-27T12:30:00+09:00"),
+      turnReply("continue", "2026-10-27T14:00:00+09:00"),
+    ]);
+    await resume(worker);
+    seconds(29 * 60 + 50);
+    worker.receive("거의 다 왔어");
+    seconds(10);
+    await worker.idle();
+    seconds(20);
+    await worker.idle();
+
+    assert.equal(chat.requests.length, 2);
+    assert.match(lastUserContent(chat), /거의 다 왔어\n\n\[이벤트\][^]*종류: 사용자 답장/);
+  });
+
+  it("only records a reply sent during blackout and leaves it out of the next call", async () => {
+    const worker = start([
+      turnReply("continue", "2026-10-28T09:00:00+09:00"),
+      turnReply("continue", "2026-10-28T10:00:00+09:00"),
+    ]);
+    await resume(worker);
+    seconds(12.5 * 60 * 60);
+    worker.receive("자?");
+    seconds(60);
+    await worker.idle();
+    assert.equal(chat.requests.length, 1);
+
+    seconds(9 * 60 * 60);
+    await worker.idle();
+    assert.deepEqual(userRows(), [{ content: "자?", reason: "blackout" }]);
+    assert.equal(chat.requests.length, 2);
+    assert.doesNotMatch(JSON.stringify(chat.requests[1]?.messages), /자\?/);
+  });
+
+  it("calls just before blackout when the debounce would end inside it", async () => {
+    const worker = start([
+      turnReply("continue", "2026-10-28T09:00:00+09:00"),
+      turnReply("continue", "2026-10-28T09:00:00+09:00"),
+    ]);
+    await resume(worker);
+    seconds(12 * 60 * 60 - 10);
+    worker.receive("잘게");
+    seconds(8);
+    await worker.idle();
+    assert.equal(chat.requests.length, 1);
+
+    seconds(1);
+    await worker.idle();
+    assert.equal(chat.requests.length, 2);
+    assert.match(lastUserContent(chat), /잘게/);
+  });
+
+  it("holds replies whose debounce ends during blackout until blackout is over", async () => {
+    const reply = Promise.withResolvers<ChatCompletion>();
+    const worker = start([
+      turnReply("continue", "2026-10-28T09:00:00+09:00"),
+      reply.promise,
+      turnReply("continue", "2026-10-28T09:00:00+09:00"),
+    ]);
+    await resume(worker);
+    seconds(12 * 60 * 60 - 60);
+    worker.receive("씻고 올게");
+    seconds(20);
+    await settle();
+    seconds(20);
+    worker.receive("다 씻었어");
+    seconds(60);
+    reply.resolve(turnReply("continue", "2026-10-28T09:00:00+09:00"));
+    await worker.idle();
+    assert.equal(chat.requests.length, 2);
+
+    seconds(8 * 60 * 60);
+    await worker.idle();
+    assert.equal(chat.requests.length, 3);
+    assert.match(lastUserContent(chat), /다 씻었어/);
+  });
 });
